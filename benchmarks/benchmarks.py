@@ -196,23 +196,34 @@ def benchmark_ws(concurrencies=None):
     return results
 
 
-def concurrencies():
-    nperm = sorted({1, 2, 4, round(CPU / 2), CPU})
-    results = {'wsgi': {}}
+def concurrency_proc():
+    results = {}
+    runs = [(1, 128), (2, 256), (4, 512)]
     for interface in ['asgi', 'rsgi', 'wsgi']:
         results[interface] = {}
-        for np in nperm:
-            for nt in [1, 2, 4]:
-                for threading_mode in ['st', 'mt']:
-                    key = f'P{np} T{nt} {threading_mode.upper()}'
-                    with app(interface, np, nt, bthreads=1, thmode=threading_mode):
-                        print(f'Bench concurrencies - [{interface}] {threading_mode} {np}:{nt}')
-                        results[interface][key] = {
-                            'm': threading_mode,
-                            'p': np,
-                            't': nt,
-                            'res': benchmark('b', concurrencies=[128, 512, 1024, 2048]),
-                        }
+        for nproc, conc in runs:
+            with app(interface, procs=nproc):
+                results[interface][f'P{nproc}'] = {
+                    'p': nproc,
+                    'c': conc,
+                    'res': benchmark('b1k', concurrencies=[conc])
+                }
+    return results
+
+
+def concurrency_threads():
+    results = {}
+    runs = [1, 2, 4]
+    for interface in ['asgi', 'rsgi', 'wsgi']:
+        results[interface] = {}
+        for nth in runs:
+            for thmode in ['st', 'mt']:
+                with app(interface, threads=nth, thmode=thmode):
+                    results[interface][f'T{nth} M{thmode}'] = {
+                        't': nth,
+                        'm': thmode,
+                        'res': benchmark('b1k', concurrencies=[256])
+                    }
     return results
 
 
@@ -221,20 +232,22 @@ def rsgi_body_type():
     benches = {'bytes 10B': 'b10', 'str 10B': 's10', 'bytes 100KB': 'b100k', 'str 100KB': 's100k'}
     for title, route in benches.items():
         with app('rsgi'):
-            results[title] = benchmark(route)
+            results[title] = benchmark(route, concurrencies=[64])
     return results
 
 
 def interfaces():
     results = {}
     benches = {
-        'get 1KB': ('b1k', {}, {'bthreads': 1}),
-        'echo 1KB': ('echo', {'post': 1024}, {'bthreads': 1}),
-        'echo 100KB (iter)': ('echoi', {'post': 100 * 1024}, {}),
+        'get 1KB': ('b1k', {'concurrencies': [128]}, {'bthreads': 1}),
+        'echo 1KB': ('echo', {'concurrencies': [128], 'post': 1024}, {'bthreads': 1}),
+        'echo 100KB (iter)': ('echoi', {'concurrencies': [64], 'post': 100 * 1024}, {}),
     }
-    for interface in ['rsgi', 'asgi', 'wsgi']:
+    for interface, iopts in [('rsgi', {}), ('asgi', {}), ('wsgi', {'concurrencies': [64]})]:
         for key, bench_data in benches.items():
             route, opts, run_opts = bench_data
+            if iopts:
+                opts.update(iopts)
             with app(interface, **run_opts):
                 results[f'{interface.upper()} {key}'] = benchmark(route, **opts)
     return results
@@ -246,8 +259,9 @@ def http2():
     for http2 in [False, True]:
         for key, bench_data in benches.items():
             route, opts = bench_data
+            opts['concurrencies'] = [128]
             h = '2' if http2 else '1'
-            with app('rsgi', http=h):
+            with app('rsgi', http=h, threads=2):
                 results[f'HTTP/{h} {key}'] = benchmark(route, h2=http2, **opts)
     return results
 
@@ -255,10 +269,10 @@ def http2():
 def files():
     results = {}
     with app('rsgi', bthreads=1):
-        results['RSGI'] = benchmark('fp')
+        results['RSGI'] = benchmark('fp', concurrencies=[128])
     with app('asgi', bthreads=1):
-        results['ASGI'] = benchmark('fb')
-        results['ASGI pathsend'] = benchmark('fp')
+        results['ASGI'] = benchmark('fb', concurrencies=[128])
+        results['ASGI pathsend'] = benchmark('fp', concurrencies=[128])
     return results
 
 
@@ -266,25 +280,25 @@ def loops():
     results = {'asgi': {}, 'rsgi': {}}
     for interface in ['asgi', 'rsgi']:
         with app(interface, loop='asyncio'):
-            results[interface]['asyncio get 10KB'] = benchmark('b10k')
-            results[interface]['asyncio echo 10KB (iter)'] = benchmark('echoi', post=10 * 1024)
+            results[interface]['asyncio get 10KB'] = benchmark('b10k', concurrencies=[128])
+            results[interface]['asyncio echo 10KB (iter)'] = benchmark('echoi', concurrencies=[128], post=10 * 1024)
         with app(interface, loop='rloop'):
-            results[interface]['rloop get 10KB'] = benchmark('b10k')
-            results[interface]['rloop echo 10KB (iter)'] = benchmark('echoi', post=10 * 1024)
+            results[interface]['rloop get 10KB'] = benchmark('b10k', concurrencies=[128])
+            results[interface]['rloop echo 10KB (iter)'] = benchmark('echoi', concurrencies=[128], post=10 * 1024)
         with app(interface, loop='uvloop'):
-            results[interface]['uvloop get 10KB'] = benchmark('b10k')
-            results[interface]['uvloop echo 10KB (iter)'] = benchmark('echoi', post=10 * 1024)
+            results[interface]['uvloop get 10KB'] = benchmark('b10k', concurrencies=[128])
+            results[interface]['uvloop echo 10KB (iter)'] = benchmark('echoi', concurrencies=[128], post=10 * 1024)
     return results
 
 
 def task_impl():
     results = {}
     with app('asgi', loop='asyncio', timpl='asyncio'):
-        results['asyncio get 10KB'] = benchmark('b10k')
-        results['asyncio echo 10KB (iter)'] = benchmark('echoi', post=10 * 1024)
+        results['asyncio get 10KB'] = benchmark('b10k', concurrencies=[128])
+        results['asyncio echo 10KB (iter)'] = benchmark('echoi', concurrencies=[128], post=10 * 1024)
     with app('asgi', loop='asyncio', timpl='rust'):
-        results['rust get 10KB'] = benchmark('b10k')
-        results['rust echo 10KB (iter)'] = benchmark('echoi', post=10 * 1024)
+        results['rust get 10KB'] = benchmark('b10k', concurrencies=[128])
+        results['rust echo 10KB (iter)'] = benchmark('echoi', concurrencies=[128], post=10 * 1024)
     return results
 
 
@@ -294,6 +308,7 @@ def vs_asgi():
     for fw in ['granian_asgi', 'uvicorn_h11', 'uvicorn_httptools', 'hypercorn']:
         for key, bench_data in benches.items():
             route, opts = bench_data
+            opts['concurrencies'] = [128]
             fw_app = fw.split('_')[1] if fw.startswith('granian') else fw
             title = ' '.join(item.title() for item in fw.split('_'))
             with app(fw_app):
@@ -307,6 +322,7 @@ def vs_wsgi():
     for fw in ['granian_wsgi', 'gunicorn_gthread', 'gunicorn_gevent', 'uwsgi']:
         for key, bench_data in benches.items():
             route, opts = bench_data
+            opts['concurrencies'] = [64]
             fw_app = fw.split('_')[1] if fw.startswith('granian') else fw
             title = ' '.join(item.title() for item in fw.split('_'))
             with app(fw_app, bthreads=1):
@@ -320,9 +336,10 @@ def vs_http2():
     for fw in ['granian_asgi', 'hypercorn']:
         for key, bench_data in benches.items():
             route, opts = bench_data
+            opts['concurrencies'] = [128]
             fw_app = fw.split('_')[1] if fw.startswith('granian') else fw
             title = ' '.join(item.title() for item in fw.split('_'))
-            with app(fw_app, http='2'):
+            with app(fw_app, http='2', threads=2):
                 results[f'{title} {key}'] = benchmark(route, h2=True, **opts)
     return results
 
@@ -330,11 +347,11 @@ def vs_http2():
 def vs_files():
     results = {}
     with app('asgi', bthreads=1):
-        results['Granian (pathsend)'] = benchmark('fp')
+        results['Granian (pathsend)'] = benchmark('fp', concurrencies=[128])
     for fw in ['uvicorn_h11', 'uvicorn_httptools', 'hypercorn']:
         title = ' '.join(item.title() for item in fw.split('_'))
         with app(fw):
-            results[title] = benchmark('fb')
+            results[title] = benchmark('fb', concurrencies=[128])
     return results
 
 
@@ -352,6 +369,7 @@ def vs_io():
     ]:
         for key, bench_data in benches.items():
             route, opts = bench_data
+            opts['concurrencies'] = [512]
             fw_app = fw.split('_')[1] if fw.startswith('granian') else fw
             title = ' '.join(item.title() for item in fw.split('_'))
             with app(fw_app):
@@ -388,7 +406,8 @@ def run():
         'files': files,
         'loops': loops,
         'task_impl': task_impl,
-        'concurrencies': concurrencies,
+        'concurrency_p': concurrency_proc,
+        'concurrency_t': concurrency_threads,
         'vs_asgi': vs_asgi,
         'vs_wsgi': vs_wsgi,
         'vs_http2': vs_http2,
@@ -400,6 +419,9 @@ def run():
     if 'base' in inp_benchmarks:
         inp_benchmarks.remove('base')
         inp_benchmarks.extend(['rsgi_body', 'interfaces', 'http2', 'files'])
+    if 'concurrency' in inp_benchmarks:
+        inp_benchmarks.remove('concurrency')
+        inp_benchmarks.extend(['concurrency_p', 'concurrency_t'])
     if 'asyncio' in inp_benchmarks:
         inp_benchmarks.remove('asyncio')
         inp_benchmarks.extend(['loops', 'task_impl'])
